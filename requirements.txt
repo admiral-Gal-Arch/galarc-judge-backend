@@ -1,1 +1,2 @@
 Flask[Standard]
+Flask_cors
