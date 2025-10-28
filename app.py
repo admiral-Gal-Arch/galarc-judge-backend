@@ -1,76 +1,85 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, abort
 from flask_cors import CORS
 import json
 import os
 from datetime import datetime
 
-# Initialize Flask app
 app = Flask(__name__)
-# Enable CORS for all routes and origins (adjust in production if needed)
+# Enable CORS for all domains on all routes
 CORS(app)
 
-# Define the path for the JSON file to store results
-JSON_FILE_PATH = 'judging_results.json'
+# Define the path for the JSON file relative to the script location
+# Ensures it works correctly regardless of where the script is run from
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RESULTS_FILE_PATH = os.path.join(BASE_DIR, 'judging_results.json')
+
+def read_results():
+    """Reads the current results from the JSON file."""
+    if not os.path.exists(RESULTS_FILE_PATH):
+        return [] # Return empty list if file doesn't exist
+    try:
+        with open(RESULTS_FILE_PATH, 'r', encoding='utf-8') as f:
+            # Handle empty file case
+            content = f.read()
+            if not content:
+                return []
+            return json.loads(content)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Error reading results file: {e}")
+        # In case of corruption, maybe return empty or handle differently
+        return []
+
+def write_results(data):
+    """Writes the updated results back to the JSON file."""
+    try:
+        with open(RESULTS_FILE_PATH, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+    except IOError as e:
+        print(f"Error writing results file: {e}")
+        # Potentially raise an exception or handle the error
+        raise IOError("Could not save results.")
+
 
 @app.route('/api/submit-judging', methods=['POST'])
 def submit_judging():
-    """
-    Receives judging data via POST request, appends it to a JSON file.
-    """
+    """Receives judging data and appends it to the JSON file."""
+    if not request.is_json:
+        abort(400, description="Request must be JSON")
+
+    new_submission = request.get_json()
+
+    # Basic validation (can be expanded)
+    required_fields = ['judgeName', 'teamName', 'hackathonTrack', 'scores', 'submissionTimestamp']
+    if not all(field in new_submission for field in required_fields):
+        abort(400, description="Missing required fields in submission")
+
+    if not isinstance(new_submission.get('scores'), dict):
+         abort(400, description="Scores field must be an object")
+
     try:
-        # Get the JSON data sent from the form
-        new_judging_data = request.get_json()
-
-        if not new_judging_data:
-            return jsonify({"status": "error", "message": "No data received"}), 400
-
-        # Add a server-side timestamp for record keeping
-        new_judging_data['receivedTimestamp'] = datetime.now().isoformat()
-
-        # Load existing data from the file
-        if os.path.exists(JSON_FILE_PATH):
-            try:
-                with open(JSON_FILE_PATH, 'r', encoding='utf-8') as f:
-                    all_judging_data = json.load(f)
-                    # Ensure it's a list
-                    if not isinstance(all_judging_data, list):
-                        all_judging_data = [] 
-            except json.JSONDecodeError:
-                print(f"Warning: {JSON_FILE_PATH} contains invalid JSON. Starting with an empty list.")
-                all_judging_data = []
-            except Exception as e:
-                print(f"Error reading {JSON_FILE_PATH}: {e}")
-                return jsonify({"status": "error", "message": "Could not read existing results file"}), 500
-        else:
-            # If the file doesn't exist, start with an empty list
-            all_judging_data = []
-
-        # Append the new data
-        all_judging_data.append(new_judging_data)
-
-        # Write the updated data back to the file
-        try:
-            with open(JSON_FILE_PATH, 'w', encoding='utf-8') as f:
-                # Use indent for readability in the JSON file
-                json.dump(all_judging_data, f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error writing to {JSON_FILE_PATH}: {e}")
-            return jsonify({"status": "error", "message": "Could not save results"}), 500
-
-        # Return a success response
-        return jsonify({"status": "success", "message": "Judgment submitted successfully"}), 200
-
+        current_results = read_results()
+        current_results.append(new_submission)
+        write_results(current_results)
+        return jsonify({"status": "success", "message": "Judgment submitted successfully!"}), 201
+    except IOError as e:
+        abort(500, description=str(e))
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        return jsonify({"status": "error", "message": "An internal server error occurred"}), 500
+        print(f"Unexpected error during submission: {e}")
+        abort(500, description="An internal server error occurred.")
 
-# Optional: Add a simple root route for testing if the server is running
-@app.route('/', methods=['GET'])
-def index():
-    return jsonify({"message": "Judging Backend Service is running."})
 
-# Run the Flask app (for local development)
+@app.route('/api/get-results', methods=['GET'])
+def get_results():
+    """Reads and returns all submitted judging results."""
+    try:
+        results = read_results()
+        return jsonify(results), 200
+    except Exception as e:
+        print(f"Unexpected error retrieving results: {e}")
+        abort(500, description="An internal server error occurred retrieving results.")
+
 if __name__ == '__main__':
-    # You can change the port if needed, e.g., port=5001
-    # Use host='0.0.0.0' to make it accessible on your network
-    app.run(debug=True, host='0.0.0.0', port=5000) 
+    # Use environment variable for port if available (e.g., for Render deployment), default to 5000
+    port = int(os.environ.get('PORT', 5000))
+    # Important for Render: host='0.0.0.0' makes it accessible externally
+    app.run(host='0.0.0.0', port=port, debug=True) # Turn debug=False for production
