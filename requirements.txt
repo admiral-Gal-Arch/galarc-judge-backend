@@ -2,3 +2,4 @@ Flask[Standard]
 Flask-cors
 pymongo[srv]
 PyJWT
+requests
