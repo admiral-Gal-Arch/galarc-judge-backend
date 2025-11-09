@@ -38,7 +38,7 @@ def submit_judging():
     if not request.is_json:
         abort(400, description="Request must be JSON")
 
-    if not submissions_collection:
+    if submissions_collection is None:
          abort(500, description="Database connection is not available.")
 
     new_submission = request.get_json()
@@ -64,7 +64,7 @@ def submit_judging():
 @app.route('/api/get-results', methods=['GET'])
 def get_results():
     """Reads and returns all submitted judging results from MongoDB."""
-    if not submissions_collection:
+    if submissions_collection is None:
          abort(500, description="Database connection is not available.")
          
     try:
@@ -88,7 +88,7 @@ def clear_results():
     Clears all results from the MongoDB collection.
     WARNING: This is insecure. Add authentication to protect this.
     """
-    if not submissions_collection:
+    if submissions_collection is None:
          abort(500, description="Database connection is not available.")
          
     try:
