@@ -4,6 +4,7 @@ import os
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 import jwt
+import requests # <-- Import requests
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
@@ -14,6 +15,7 @@ CORS(app)
 MONGODB_URI = os.environ.get('MONGODB_URI')
 SECRET_KEY = os.environ.get('SECRET_KEY')
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
+AGGREGATOR_URL = os.environ.get('AGGREGATOR_URL') # <-- Get new variable
 
 if not MONGODB_URI or not SECRET_KEY or not ADMIN_PASSWORD:
     raise RuntimeError("Missing one or more environment variables: MONGODB_URI, SECRET_KEY, ADMIN_PASSWORD")
@@ -22,7 +24,6 @@ try:
     client = MongoClient(MONGODB_URI)
     db = client.get_database("hackathonDB")
     submissions_collection = db.get_collection("submissions")
-    # NEW: Collection to store the release state
     app_state_collection = db.get_collection("app_state")
     client.server_info()
     print("Successfully connected to MongoDB.")
@@ -85,7 +86,7 @@ def submit_judging():
          abort(500, description="Database connection is not available.")
     
     new_submission = request.get_json()
-    # ... (validation code omitted for brevity) ...
+    # ... (validation code) ...
     try:
         result = submissions_collection.insert_one(new_submission)
         return jsonify({"status": "success", "message": "Judgment submitted successfully!", "id": str(result.inserted_id)}), 201
@@ -93,23 +94,17 @@ def submit_judging():
         abort(500, description="An internal server error occurred.")
 
 
-# --- MODIFIED: Public Results Endpoint ---
+# --- Public Results Endpoint (Unchanged) ---
 @app.route('/api/get-results', methods=['GET'])
 def get_results():
-    """
-    Publicly returns results ONLY IF they have been released by an admin.
-    """
     if submissions_collection is None or app_state_collection is None:
          abort(500, description="Database connection is not available.")
 
-    # 1. Check the release status from the database
     status_doc = app_state_collection.find_one({"_id": "release_config"})
     
-    # 2. If doc doesn't exist OR results_released is False, block the request
     if not status_doc or not status_doc.get("results_released", False):
         abort(403, description="Results have not been released by the admin yet.")
 
-    # 3. If released, proceed to get results
     try:
         all_results_cursor = submissions_collection.find()
         results_list = list(all_results_cursor)
@@ -117,19 +112,16 @@ def get_results():
             result['_id'] = str(result['_id'])
         return jsonify(results_list), 200
     except Exception as e:
-        print(f"Unexpected error retrieving results: {e}")
         abort(500, description="An internal server error occurred retrieving results.")
 
 
-# --- NEW: Admin-Only Endpoints ---
+# --- Admin-Only Endpoints (Status, Release, Retract) ---
 
 @app.route('/api/results-status', methods=['GET'])
 @token_required
 def get_results_status():
-    """Admin-only: Checks if results are currently released."""
     if app_state_collection is None:
         abort(500, description="Database connection is not available.")
-        
     status_doc = app_state_collection.find_one({"_id": "release_config"})
     is_released = status_doc.get("results_released", False) if status_doc else False
     return jsonify({"status": "success", "results_released": is_released}), 200
@@ -137,12 +129,9 @@ def get_results_status():
 @app.route('/api/release-results', methods=['POST'])
 @token_required
 def release_results():
-    """Admin-only: Sets the results_released flag to True."""
     if app_state_collection is None:
         abort(500, description="Database connection is not available.")
-        
     try:
-        # upsert=True creates the document if it doesn't exist
         app_state_collection.update_one(
             {"_id": "release_config"},
             {"$set": {"results_released": True}},
@@ -155,10 +144,8 @@ def release_results():
 @app.route('/api/retract-results', methods=['POST'])
 @token_required
 def retract_results():
-    """Admin-only: Sets the results_released flag to False."""
     if app_state_collection is None:
         abort(500, description="Database connection is not available.")
-        
     try:
         app_state_collection.update_one(
             {"_id": "release_config"},
@@ -170,11 +157,36 @@ def retract_results():
         abort(500, description=f"Could not retract results: {str(e)}")
 
 
+# --- NEW: Admin-Only Aggregator Endpoint ---
+
+@app.route('/api/refresh-aggregator', methods=['POST'])
+@token_required
+def refresh_aggregator():
+    """Admin-only: Calls the aggregator backend to refresh its data."""
+    if not AGGREGATOR_URL:
+        abort(500, description="AGGREGATOR_URL is not set in the environment.")
+    
+    try:
+        # NOTE: You must change '/api/refresh-data' to the
+        # actual endpoint in your aggregator-backend.
+        aggregator_endpoint = f"{AGGREGATOR_URL}/api/refresh-data"
+        
+        # You can also pass a token/key if your aggregator needs one
+        # headers = {'Authorization': f'Bearer {YOUR_AGGREGATOR_SECRET}'}
+        
+        response = requests.post(aggregator_endpoint) #, headers=headers)
+        response.raise_for_status() # Raise an exception for bad statuses
+        
+        return jsonify({"status": "success", "message": "Aggregator refresh triggered successfully."}), 200
+    except requests.exceptions.RequestException as e:
+        print(f"Error calling aggregator: {e}")
+        abort(500, description=f"Could not trigger aggregator refresh: {str(e)}")
+
+
 # --- Admin-Only Clear Endpoint (Unchanged) ---
 @app.route('/api/clear-results', methods=['POST'])
 @token_required
 def clear_results():
-    """Admin-only: Clears all submissions."""
     if submissions_collection is None:
          abort(500, description="Database connection is not available.")
     try:
